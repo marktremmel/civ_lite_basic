@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Civ Lite: Ultimate Edition</title>
+    <style>
+        body { margin: 0; background: #1a1a1a; color: white; font-family: 'Segoe UI', sans-serif; display: flex; height: 100vh; overflow: hidden; }
+        #canvas-container { flex-grow: 1; position: relative; overflow: hidden; background: #0b0d0f; }
+        canvas { cursor: grab; }
+        
+        /* Top Bar for Research */
+        #top-bar { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.85); padding: 12px 20px; border-radius: 8px; border: 1px solid #3498db; z-index: 5; min-width: 220px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        
+        #ui { width: 360px; background: #2c2c2c; border-left: 3px solid #444; padding: 20px; box-shadow: -5px 0 15px rgba(0,0,0,0.5); z-index: 10; display: flex; flex-direction: column; overflow-y: auto; }
+        .stat-box { background: #3d3d3d; padding: 10px; border-radius: 5px; margin-bottom: 10px; border-left: 4px solid #888; }
+        .p1 { border-left-color: #44f; } .p2 { border-left-color: #f44; }
+        
+        button { background: #4a4a4a; color: white; border: none; padding: 10px; width: 100%; border-radius: 4px; cursor: pointer; margin-top: 5px; font-weight: bold; }
+        button:hover { background: #666; }
+        
+        .city-panel { background: #444; padding: 12px; margin-top: 10px; border-radius: 5px; border: 1px solid #555; }
+        .build-btn { background: #34495e; font-size: 0.8em; padding: 8px; margin: 2px 0; display: block; width: 100%; text-align: left; border-radius: 4px; border: none; color: white; cursor: pointer; }
+        .build-btn:hover:not(:disabled) { background: #2c3e50; }
+        .build-btn:disabled { background: #222; color: #555; cursor: not-allowed; }
+        
+        progress { width: 100%; height: 10px; accent-color: #2ecc71; background: #1a1a1a; border-radius: 5px; border: none; }
+        #science-progress { accent-color: #3498db; }
+        .yield-badge { background: #1a1a1a; padding: 2px 5px; border-radius: 3px; font-size: 0.8em; margin-right: 5px; }
+    </style>
+</head>
+<body>
+
+<div id="top-bar">
+    <div style="font-size: 0.8em; color: #3498db; font-weight: bold; letter-spacing: 1px;">RESEARCHING: <span id="tech-name">None</span></div>
+    <progress id="science-progress" value="0" max="100"></progress>
+    <div id="unlocked-techs" style="font-size: 0.7em; color: #aaa; margin-top: 4px;">Unlocked: None</div>
+</div>
+
+<div id="canvas-container">
+    <canvas id="hexCanvas"></canvas>
+</div>
+
+<div id="ui">
+    <h2 style="margin-top:0; color: #f1c40f;">Civ Lite</h2>
+    <div id="player-box" class="stat-box p1">
+        <strong>Turn: <span id="turn-val">1</span></strong> | <span id="player-val">Player 1</span>
+    </div>
+
+    <div id="selection-box" class="stat-box">
+        <strong>Tile:</strong> <span id="tile-info">None</span><br>
+        <div id="yield-info" style="margin-top: 5px;"></div>
+        <div id="unit-info" style="margin-top:8px; font-weight:bold; color: #e74c3c;"></div>
+        <button id="citizen-btn" style="display:none; background: #d35400; font-size: 0.8em;" onclick="toggleCitizen()">Assign/Remove Citizen</button>
+    </div>
+
+    <div id="city-panel" class="city-panel" style="display:none;">
+        <strong>City Status</strong><br>
+        <span style="font-size: 0.9em;">Pop: <span id="city-pop">1</span> | Growth:</span>
+        <progress id="food-bar" value="0" max="20"></progress>
+        
+        <div style="border-top: 1px solid #666; margin-top: 10px; padding-top: 5px;">
+            <strong style="font-size: 0.9em;">Producing: <span id="current-build">Nothing</span></strong>
+            <progress id="prod-bar" value="0" max="100"></progress>
+            <div id="build-options" style="margin-top:8px;"></div>
+        </div>
+    </div>
+
+    <button onclick="endTurn()" style="background: #27ae60; margin-top: 10px; font-size: 1.1em; padding: 15px;">END TURN</button>
+    <button id="settle-btn" style="display:none; background: #8e44ad;" onclick="settle()">Settle City</button>
+</div>
+
+<script>
+const canvas = document.getElementById('hexCanvas');
+const ctx = canvas.getContext('2d');
+const GRID_SIZE = 16; 
+const HEX_RADIUS = 38;
+
+const BLUEPRINTS = {
+    "Warrior":  { type: "unit", cost: 20, str: 10, tech: null },
+    "Swordsman":{ type: "unit", cost: 45, str: 24, tech: "Bronze Working" },
+    "Monument": { type: "bld",  cost: 25, culture: 2, tech: null },
+    "Granary":  { type: "bld",  cost: 35, food: 3, tech: "Pottery" },
+    "Library":  { type: "bld",  cost: 40, science: 5, tech: "Writing" },
+    "Workshop": { type: "bld",  cost: 55, prod: 4, tech: "Apprenticeship" }
+};
+
+const TECH_TREE = [
+    { name: "Pottery", cost: 20 },
+    { name: "Writing", cost: 45 },
+    { name: "Bronze Working", cost: 70 },
+    { name: "Apprenticeship", cost: 100 }
+];
+
+let state = {
+    turn: 1, currentPlayer: 1, selected: null, activeUnit: null,
+    camera: { x: 50, y: 50, isDragging: false, lastMouse: {x:0, y:0} },
+    map: [], borders: {}, 
+    players: {
+        1: { techIdx: 0, science: 0, unlocked: [], currentTech: TECH_TREE[0] },
+        2: { techIdx: 0, science: 0, unlocked: [], currentTech: TECH_TREE[0] }
+    },
+    units: [
+        {q: 2, r: 2, p: 1, type: 'Warrior', mp: 2, hp: 100, str: 10},
+        {q: 13, r: 13, p: 2, type: 'Warrior', mp: 2, hp: 100, str: 10}
+    ],
+    cities: []
+};
+
+function init() {
+    for (let q = 0; q < GRID_SIZE; q++) {
+        state.map[q] = [];
+        for (let r = 0; r < GRID_SIZE; r++) {
+            let n = Math.random();
+            const t = n > 0.85 ? {color:"#5a6356",f:0,p:2,name:"Hill"} : 
+                      n > 0.7 ? {color:"#2d4d24",f:1,p:1,name:"Forest"} :
+                      n > 0.45 ? {color:"#7a743a",f:1,p:1,name:"Plain"} : {color:"#4e7a3a",f:2,p:0,name:"Grass"};
+            state.map[q][r] = t;
+        }
+    }
+}
+
+function getPixel(q, r) {
+    const x = HEX_RADIUS * (3/2 * q) + state.camera.x;
+    const y = HEX_RADIUS * (Math.sqrt(3)/2 * q + Math.sqrt(3) * r) + state.camera.y;
+    return { x, y };
+}
+
+function getNeighbors(q, r) {
+    const dir = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
+    return dir.map(([dq, dr]) => ({q: q + dq, r: r + dr}))
+              .filter(n => n.q >= 0 && n.q < GRID_SIZE && n.r >= 0 && n.r < GRID_SIZE);
+}
+
+function draw() {
+    canvas.width = window.innerWidth - 360; canvas.height = window.innerHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let q = 0; q < GRID_SIZE; q++) {
+        for (let r = 0; r < GRID_SIZE; r++) {
+            const { x, y } = getPixel(q, r);
+            ctx.beginPath();
+            for (let i = 0; i < 6; i++) ctx.lineTo(x + HEX_RADIUS * Math.cos(Math.PI/180 * (60 * i)), y + HEX_RADIUS * Math.sin(Math.PI/180 * (60 * i)));
+            ctx.closePath(); 
+            ctx.fillStyle = state.map[q][r].color; 
+            ctx.fill();
+
+            const owner = state.borders[`${q},${r}`];
+            if (owner) { 
+                ctx.strokeStyle = owner === 1 ? "rgba(68, 68, 255, 0.8)" : "rgba(255, 68, 68, 0.8)"; 
+                ctx.lineWidth = 4; ctx.stroke(); 
+            } else {
+                ctx.strokeStyle = "rgba(255,255,255,0.05)"; ctx.lineWidth = 1; ctx.stroke();
+            }
+            if (state.selected?.q === q && state.selected?.r === r) { ctx.strokeStyle = "white"; ctx.lineWidth = 4; ctx.stroke(); }
+            
+            // Draw Citizen Icon
+            const cityWorking = state.cities.find(c => c.workedTiles.includes(`${q},${r}`));
+            if (cityWorking) {
+                ctx.fillStyle = "#f1c40f";
+                ctx.beginPath(); ctx.arc(x + 18, y - 18, 5, 0, 7); ctx.fill();
+            }
+        }
+    }
+    state.cities.forEach(c => {
+        const {x, y} = getPixel(c.q, c.r);
+        ctx.fillStyle = "white"; ctx.font = "bold 12px Arial"; ctx.textAlign = "center"; ctx.fillText("CITY", x, y + 5);
+    });
+    state.units.forEach(u => {
+        const {x, y} = getPixel(u.q, u.r);
+        ctx.beginPath(); ctx.arc(x, y, 16, 0, 7);
+        ctx.fillStyle = u.p === 1 ? "#44f" : "#f44"; ctx.fill();
+        ctx.strokeStyle = (u === state.activeUnit) ? "yellow" : "white"; ctx.lineWidth = 3; ctx.stroke();
+        ctx.fillStyle = "black"; ctx.fillRect(x-12, y+20, 24, 5);
+        ctx.fillStyle = "#2ecc71"; ctx.fillRect(x-12, y+20, (u.hp/100)*24, 5);
+    });
+}
+
+function handleInteraction(q, r) {
+    const targetUnit = state.units.find(u => u.q === q && u.r === r);
+    if (state.activeUnit && state.activeUnit.mp > 0) {
+        const dist = (Math.abs(state.activeUnit.q - q) + Math.abs(state.activeUnit.q + state.activeUnit.r - q - r) + Math.abs(state.activeUnit.r - r)) / 2;
+        if (dist === 1) {
+            if (targetUnit && targetUnit.p !== state.currentPlayer) {
+                targetUnit.hp -= state.activeUnit.str * (0.7 + Math.random()*0.3);
+                state.activeUnit.hp -= targetUnit.str * 0.4;
+                state.activeUnit.mp = 0;
+                if (targetUnit.hp <= 0) state.units = state.units.filter(u => u !== targetUnit);
+                if (state.activeUnit.hp <= 0) { state.units = state.units.filter(u => u !== state.activeUnit); state.activeUnit = null; }
+            } else if (!targetUnit) { state.activeUnit.q = q; state.activeUnit.r = r; state.activeUnit.mp--; }
+        }
+    }
+    state.selected = {q, r};
+    state.activeUnit = (targetUnit && targetUnit.p === state.currentPlayer) ? targetUnit : null;
+    updateUI(); draw();
+}
+
+function updateUI() {
+    const pData = state.players[state.currentPlayer];
+    document.getElementById('tech-name').innerText = pData.currentTech ? pData.currentTech.name : "ERA MAXED";
+    document.getElementById('science-progress').value = pData.science;
+    document.getElementById('science-progress').max = pData.currentTech ? pData.currentTech.cost : 100;
+    document.getElementById('unlocked-techs').innerText = "Unlocked: " + (pData.unlocked.join(", ") || "None");
+
+    if (!state.selected) return;
+    const {q, r} = state.selected;
+    const t = state.map[q][r];
+    const u = state.units.find(u => u.q === q && u.r === r);
+    const city = state.cities.find(c => c.q === q && c.r === r);
+    const owner = state.borders[`${q},${r}`];
+
+    document.getElementById('tile-info').innerText = t.name + (owner ? ` (Player ${owner})` : "");
+    document.getElementById('yield-info').innerHTML = `<span class="yield-badge" style="color:#2ecc71">Food: ${t.f}</span><span class="yield-badge" style="color:#f1c40f">Prod: ${t.p}</span>`;
+    document.getElementById('unit-info').innerText = u ? `${u.type} [HP: ${Math.floor(u.hp)}]` : "";
+    document.getElementById('settle-btn').style.display = (u && u.type === 'Warrior' && !owner) ? 'block' : 'none';
+    
+    // Citizen Toggle Button
+    const cityOfOwner = state.cities.find(c => c.p === state.currentPlayer && owner === c.p);
+    document.getElementById('citizen-btn').style.display = cityOfOwner ? 'block' : 'none';
+
+    const panel = document.getElementById('city-panel');
+    const selectedCity = state.cities.find(c => c.q === q && c.r === r);
+    if (selectedCity && selectedCity.p === state.currentPlayer) {
+        panel.style.display = 'block';
+        document.getElementById('city-pop').innerText = selectedCity.pop;
+        document.getElementById('food-bar').value = selectedCity.food;
+        document.getElementById('food-bar').max = 20 + (selectedCity.pop * 5);
+        document.getElementById('current-build').innerText = selectedCity.queue || "Idle";
+        document.getElementById('prod-bar').value = selectedCity.prod;
+        document.getElementById('prod-bar').max = BLUEPRINTS[selectedCity.queue]?.cost || 100;
+        
+        let html = "";
+        for(let key in BLUEPRINTS) {
+            const b = BLUEPRINTS[key];
+            const locked = b.tech && !pData.unlocked.includes(b.tech);
+            const isBuilt = b.type === "bld" && selectedCity.buildings.includes(key);
+            html += `<button class="build-btn" ${locked || isBuilt ? 'disabled' : ''} onclick="setBuild('${key}')">
+                ${key} (${b.cost}P) ${locked ? '🔒' : isBuilt ? '✅' : ''}
+            </button>`;
+        }
+        document.getElementById('build-options').innerHTML = html;
+    } else { panel.style.display = 'none'; }
+}
+
+function setBuild(item) {
+    const city = state.cities.find(c => c.q === state.selected.q && c.r === state.selected.r);
+    if (city) { city.queue = item; city.prod = 0; updateUI(); }
+}
+
+function toggleCitizen() {
+    const key = `${state.selected.q},${state.selected.r}`;
+    const city = state.cities.find(c => c.p === state.currentPlayer && state.borders[key] === c.p);
+    if (!city) return;
+
+    if (city.workedTiles.includes(key)) {
+        city.workedTiles = city.workedTiles.filter(t => t !== key);
+    } else if (city.workedTiles.length < city.pop) {
+        city.workedTiles.push(key);
+    }
+    draw(); updateUI();
+}
+
+function settle() {
+    const {q, r} = state.selected;
+    const newCity = { q, r, p: state.currentPlayer, food: 0, prod: 0, pop: 1, queue: null, buildings: [], workedTiles: [`${q},${r}`] };
+    state.cities.push(newCity);
+    state.borders[`${q},${r}`] = state.currentPlayer;
+    getNeighbors(q, r).forEach(n => state.borders[`${n.q},${n.r}`] = state.currentPlayer);
+    state.units = state.units.filter(u => !(u.q === q && u.r === r));
+    draw(); updateUI();
+}
+
+function endTurn() {
+    const pData = state.players[state.currentPlayer];
+    let totalScience = 2; // Base Science
+
+    state.cities.filter(c => c.p === state.currentPlayer).forEach(c => {
+        // Collect yields from worked tiles
+        let turnFood = 0;
+        let turnProd = 0;
+        
+        // City Center Buff: +3 Food, +3 Production automatically
+        turnFood += 3;
+        turnProd += 3;
+
+        c.workedTiles.forEach(key => {
+            const [tq, tr] = key.split(',').map(Number);
+            // Don't double count city center if it's manually worked
+            if(tq !== c.q || tr !== c.r) {
+                turnFood += state.map[tq][tr].f;
+                turnProd += state.map[tq][tr].p;
+            }
+        });
+
+        // Add building bonuses
+        c.buildings.forEach(b => {
+            if (b === "Granary") turnFood += 3;
+            if (b === "Workshop") turnProd += 4;
+            if (b === "Library") totalScience += 5;
+            if (b === "Monument") { /* Border growth logic could go here */ }
+        });
+        
+        // Process Growth with Overflow Fix
+        c.food += turnFood;
+        const foodNeed = 20 + (c.pop * 5);
+        if (c.food >= foodNeed) { 
+            c.food -= foodNeed; 
+            c.pop++; 
+            // Auto-expand border on growth
+            const currentBorders = Object.keys(state.borders).filter(k => state.borders[k] === c.p);
+            for(let key of currentBorders) {
+                const [bq, br] = key.split(',').map(Number);
+                const neighbor = getNeighbors(bq, br).find(n => !state.borders[`${n.q},${n.r}`]);
+                if (neighbor) { state.borders[`${neighbor.q},${neighbor.r}`] = c.p; break; }
+            }
+        }
+        
+        // Process Production with Overflow Fix
+        if (c.queue) {
+            const bld = BLUEPRINTS[c.queue];
+            c.prod += turnProd;
+            if (c.prod >= bld.cost) {
+                const remainder = c.prod - bld.cost;
+                if (bld.type === "unit") {
+                    state.units.push({ q: c.q, r: c.r, p: c.p, type: c.queue, mp: 2, hp: 100, str: bld.str });
+                } else { c.buildings.push(c.queue); }
+                c.queue = null; 
+                c.prod = remainder; 
+            }
+        }
+    });
+
+    // Research Progress
+    if (pData.currentTech) {
+        pData.science += totalScience;
+        if (pData.science >= pData.currentTech.cost) {
+            pData.science = 0;
+            pData.unlocked.push(pData.currentTech.name);
+            pData.techIdx++;
+            pData.currentTech = TECH_TREE[pData.techIdx] || null;
+            alert(`Discovery! Player ${state.currentPlayer} has researched ${pData.unlocked[pData.unlocked.length-1]}!`);
+        }
+    }
+
+    // Switch turns
+    state.currentPlayer = state.currentPlayer === 1 ? 2 : 1;
+    if(state.currentPlayer === 1) state.turn++;
+    state.units.forEach(u => u.mp = 2);
+    
+    document.getElementById('turn-val').innerText = state.turn;
+    document.getElementById('player-val').innerText = "Player " + state.currentPlayer;
+    document.getElementById('player-box').className = `stat-box p${state.currentPlayer}`;
+    updateUI(); draw();
+}
+
+// Input Handlers
+canvas.onclick = (e) => {
+    for (let q = 0; q < GRID_SIZE; q++) {
+        for (let r = 0; r < GRID_SIZE; r++) {
+            const { x, y } = getPixel(q, r);
+            if (Math.hypot(e.clientX - x, e.clientY - y) < HEX_RADIUS) { handleInteraction(q, r); return; }
+        }
+    }
+};
+
+canvas.onmousedown = (e) => { state.camera.isDragging = true; state.camera.lastMouse = { x: e.clientX, y: e.clientY }; };
+window.onmouseup = () => state.camera.isDragging = false;
+window.onmousemove = (e) => {
+    if (state.camera.isDragging) {
+        state.camera.x += e.clientX - state.camera.lastMouse.x;
+        state.camera.y += e.clientY - state.camera.lastMouse.y;
+        state.camera.lastMouse = { x: e.clientX, y: e.clientY };
+        draw();
+    }
+};
+
+init(); draw(); updateUI();
+</script>
+</body>
+</html>

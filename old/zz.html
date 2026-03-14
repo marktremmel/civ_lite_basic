@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Civ Lite: Full Featured 16x16</title>
+    <style>
+        body { margin: 0; background: #1a1a1a; color: white; font-family: 'Segoe UI', Tahoma, sans-serif; display: flex; height: 100vh; overflow: hidden; }
+        #canvas-container { flex-grow: 1; position: relative; overflow: hidden; background: #0b0d0f; }
+        canvas { cursor: grab; }
+        canvas:active { cursor: grabbing; }
+        #ui { width: 360px; background: #2c2c2c; border-left: 3px solid #444; padding: 20px; box-shadow: -5px 0 15px rgba(0,0,0,0.5); z-index: 10; display: flex; flex-direction: column; overflow-y: auto; }
+        .stat-box { background: #3d3d3d; padding: 10px; border-radius: 5px; margin-bottom: 10px; border-left: 4px solid #888; }
+        .p1 { border-left-color: #44f; }
+        .p2 { border-left-color: #f44; }
+        button { background: #4a4a4a; color: white; border: none; padding: 12px; width: 100%; border-radius: 4px; cursor: pointer; margin-top: 8px; font-weight: bold; transition: background 0.2s; }
+        button:hover { background: #666; }
+        button:disabled { opacity: 0.3; cursor: not-allowed; }
+        .city-panel { background: #444; padding: 15px; margin-top: 10px; border-radius: 5px; border: 1px solid #555; }
+        progress { width: 100%; height: 12px; accent-color: #2ecc71; margin: 5px 0; }
+        .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.8em; margin-top: auto; padding-top: 20px; border-top: 1px solid #444; }
+        .dot { width: 10px; height: 10px; display: inline-block; border-radius: 50%; margin-right: 5px; }
+    </style>
+</head>
+<body>
+
+<div id="canvas-container">
+    <canvas id="hexCanvas"></canvas>
+</div>
+
+<div id="ui">
+    <h2 style="margin-top:0; color: #f1c40f;">Civ Lite</h2>
+    
+    <div id="player-box" class="stat-box p1">
+        <strong>Turn: <span id="turn-val">1</span></strong> | <span id="player-val">Player 1</span><br>
+        Era: <span id="era-val">Ancient</span>
+    </div>
+    
+    <div class="stat-box">
+        <strong>Selected Tile:</strong> <span id="tile-info">None</span><br>
+        <div id="yield-info" style="font-size: 0.9em; color: #aaa; margin-top: 4px;"></div>
+        <div id="citizen-controls" style="margin-top:10px; display:none;">
+            <button id="assign-btn" onclick="toggleCitizen()">Assign/Remove Citizen</button>
+        </div>
+    </div>
+
+    <div id="city-info" class="city-panel" style="display:none;">
+        <strong style="color: #ecf0f1;">City Management</strong><br>
+        Citizens: <span id="city-pop">1</span><br>
+        Growth (Food): <progress id="food-bar" value="0" max="20"></progress><br>
+        Production (<span id="build-target">Warrior</span>): <progress id="prod-bar" value="0" max="30"></progress>
+    </div>
+
+    <button onclick="endTurn()" style="background: #27ae60;">End Turn</button>
+    
+    <div id="actions">
+        <button id="settle-btn" style="display:none;" onclick="settle()">Settle City</button>
+        <button id="era-btn" onclick="advanceEra()">Advance to Classical Era</button>
+    </div>
+
+    <div class="legend">
+        <div><span class="dot" style="background:#4e7a3a"></span>Grass (2F/0P)</div>
+        <div><span class="dot" style="background:#7a743a"></span>Plain (1F/1P)</div>
+        <div><span class="dot" style="background:#5a6356"></span>Hill (0F/2P)</div>
+        <div><span class="dot" style="background:#2d4d24"></span>Forest (1F/1P)</div>
+    </div>
+    <p style="font-size: 0.7em; color: #888; margin-top: 10px;">Drag map to scroll view.</p>
+</div>
+
+<script>
+const canvas = document.getElementById('hexCanvas');
+const ctx = canvas.getContext('2d');
+const GRID_SIZE = 16; 
+const HEX_RADIUS = 38;
+
+const TERRAIN = {
+    GRASSLAND: { color: "#4e7a3a", name: "Grassland", f: 2, p: 0 },
+    PLAINS:    { color: "#7a743a", name: "Plains", f: 1, p: 1 },
+    HILLS:     { color: "#5a6356", name: "Hills", f: 0, p: 2 },
+    FOREST:    { color: "#2d4d24", name: "Forest", f: 1, p: 1 }
+};
+
+let state = {
+    turn: 1,
+    currentPlayer: 1,
+    selected: null,
+    activeUnit: null,
+    camera: { x: 80, y: 80, isDragging: false, lastMouse: {x:0, y:0} },
+    map: [],
+    borders: {}, // "q,r": ownerID
+    eras: { 1: "Ancient", 2: "Ancient" },
+    units: [
+        {q: 2, r: 2, p: 1, type: 'Warrior', mp: 2, maxMp: 2}, 
+        {q: 13, r: 13, p: 2, type: 'Warrior', mp: 2, maxMp: 2}
+    ],
+    cities: [] // {q, r, p, food, prod, pop, workedTiles: []}
+};
+
+// Initialize 16x16 Map with Noise-based Distribution
+function initMap() {
+    for (let q = 0; q < GRID_SIZE; q++) {
+        state.map[q] = [];
+        for (let r = 0; r < GRID_SIZE; r++) {
+            let n = Math.random();
+            if (n > 0.85) state.map[q][r] = TERRAIN.HILLS;
+            else if (n > 0.7) state.map[q][r] = TERRAIN.FOREST;
+            else if (n > 0.45) state.map[q][r] = TERRAIN.PLAINS;
+            else state.map[q][r] = TERRAIN.GRASSLAND;
+        }
+    }
+}
+
+function getPixel(q, r) {
+    const x = HEX_RADIUS * (3/2 * q) + state.camera.x;
+    const y = HEX_RADIUS * (Math.sqrt(3)/2 * q + Math.sqrt(3) * r) + state.camera.y;
+    return { x, y };
+}
+
+function getNeighbors(q, r) {
+    const dir = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
+    return dir.map(([dq, dr]) => ({q: q + dq, r: r + dr}))
+              .filter(n => n.q >= 0 && n.q < GRID_SIZE && n.r >= 0 && n.r < GRID_SIZE);
+}
+
+function getDistance(q1, r1, q2, r2) {
+    return (Math.abs(q1 - q2) + Math.abs(q1 + r1 - q2 - r2) + Math.abs(r1 - r2)) / 2;
+}
+
+function draw() {
+    canvas.width = window.innerWidth - 360;
+    canvas.height = window.innerHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (let q = 0; q < GRID_SIZE; q++) {
+        for (let r = 0; r < GRID_SIZE; r++) {
+            const { x, y } = getPixel(q, r);
+            const type = state.map[q][r];
+            
+            // Draw Hexagon
+            ctx.beginPath();
+            for (let i = 0; i < 6; i++) {
+                ctx.lineTo(x + HEX_RADIUS * Math.cos(Math.PI/180 * (60 * i)), 
+                           y + HEX_RADIUS * Math.sin(Math.PI/180 * (60 * i)));
+            }
+            ctx.closePath();
+            ctx.fillStyle = type.color;
+            ctx.fill();
+
+            // Borders
+            const owner = state.borders[`${q},${r}`];
+            if (owner) {
+                ctx.strokeStyle = owner === 1 ? "#5c5cff" : "#ff5c5c";
+                ctx.lineWidth = 3; ctx.stroke();
+            } else {
+                ctx.strokeStyle = "rgba(0,0,0,0.15)";
+                ctx.lineWidth = 1; ctx.stroke();
+            }
+
+            // Selection Glow
+            if (state.selected?.q === q && state.selected?.r === r) {
+                ctx.strokeStyle = "white"; ctx.lineWidth = 4; ctx.stroke();
+            }
+
+            // Citizen Working Indicator
+            const isWorked = state.cities.some(c => c.workedTiles.includes(`${q},${r}`));
+            if (isWorked) {
+                ctx.fillStyle = "#f1c40f";
+                ctx.beginPath(); ctx.arc(x + 20, y - 20, 5, 0, 7); ctx.fill();
+            }
+        }
+    }
+
+    // Draw Cities
+    state.cities.forEach(c => {
+        const {x, y} = getPixel(c.q, c.r);
+        ctx.fillStyle = "white"; ctx.font = "bold 11px Arial"; ctx.textAlign = "center";
+        ctx.fillText("CITY", x, y + 4);
+    });
+
+    // Draw Units
+    state.units.forEach(u => {
+        const {x, y} = getPixel(u.q, u.r);
+        ctx.beginPath(); ctx.arc(x, y, 16, 0, 7);
+        ctx.fillStyle = u.p === 1 ? "#44f" : "#f44";
+        ctx.fill();
+        ctx.strokeStyle = (u === state.activeUnit) ? "yellow" : "white";
+        ctx.lineWidth = 3; ctx.stroke();
+        ctx.fillStyle = "white"; ctx.font = "bold 12px Arial";
+        ctx.fillText(u.type[0], x, y + 4);
+    });
+}
+
+// Camera Interaction
+canvas.onmousedown = (e) => { state.camera.isDragging = true; state.camera.lastMouse = { x: e.clientX, y: e.clientY }; };
+window.onmouseup = () => state.camera.isDragging = false;
+window.onmousemove = (e) => {
+    if (state.camera.isDragging) {
+        state.camera.x += e.clientX - state.camera.lastMouse.x;
+        state.camera.y += e.clientY - state.camera.lastMouse.y;
+        state.camera.lastMouse = { x: e.clientX, y: e.clientY };
+        draw();
+    }
+};
+
+canvas.onclick = (e) => {
+    for (let q = 0; q < GRID_SIZE; q++) {
+        for (let r = 0; r < GRID_SIZE; r++) {
+            const { x, y } = getPixel(q, r);
+            if (Math.hypot(e.clientX - x, e.clientY - y) < HEX_RADIUS) {
+                handleTileClick(q, r);
+                return;
+            }
+        }
+    }
+};
+
+function handleTileClick(q, r) {
+    const unitAtTile = state.units.find(u => u.q === q && u.r === r);
+    const key = `${q},${r}`;
+
+    // Movement Logic
+    if (state.activeUnit && !unitAtTile && getDistance(state.activeUnit.q, state.activeUnit.r, q, r) === 1 && state.activeUnit.mp > 0) {
+        state.activeUnit.q = q; state.activeUnit.r = r; state.activeUnit.mp--;
+    } else {
+        state.activeUnit = (unitAtTile && unitAtTile.p === state.currentPlayer) ? unitAtTile : null;
+    }
+
+    state.selected = { q, r };
+    updateUI();
+    draw();
+}
+
+function updateUI() {
+    if (!state.selected) return;
+    const {q, r} = state.selected;
+    const t = state.map[q][r];
+    const u = state.units.find(u => u.q === q && u.r === r);
+    const owner = state.borders[`${q},${r}`];
+    
+    document.getElementById('tile-info').innerText = t.name + (owner ? ` (Owned by P${owner})` : "");
+    document.getElementById('yield-info').innerText = `Base Yield: ${t.f} Food, ${t.p} Production`;
+    document.getElementById('settle-btn').style.display = (u && u.p === state.currentPlayer) ? 'block' : 'none';
+    
+    // Citizen assignment button logic
+    const cityOfPlayer = state.cities.find(c => c.p === state.currentPlayer && state.borders[`${q},${r}`] === c.p);
+    document.getElementById('citizen-controls').style.display = cityOfPlayer ? 'block' : 'none';
+
+    // City Panel logic
+    const cityHere = state.cities.find(c => (c.q === q && c.r === r) || c.workedTiles.includes(`${q},${r}`));
+    const panel = document.getElementById('city-info');
+    if (cityHere) {
+        panel.style.display = 'block';
+        document.getElementById('city-pop').innerText = cityHere.pop;
+        document.getElementById('food-bar').value = cityHere.food;
+        document.getElementById('prod-bar').value = cityHere.prod;
+        document.getElementById('build-target').innerText = state.eras[cityHere.p] === "Ancient" ? "Warrior" : "Swordsman";
+    } else {
+        panel.style.display = 'none';
+    }
+    
+    document.getElementById('era-btn').disabled = (state.eras[state.currentPlayer] === "Classical");
+}
+
+function settle() {
+    const {q, r} = state.selected;
+    const city = { q, r, p: state.currentPlayer, food: 0, prod: 0, pop: 1, workedTiles: [`${q},${r}`] };
+    state.cities.push(city);
+    
+    // Auto-claim starting tiles
+    state.borders[`${q},${r}`] = state.currentPlayer;
+    getNeighbors(q, r).forEach(n => state.borders[`${n.q},${n.r}`] = state.currentPlayer);
+    
+    state.units = state.units.filter(u => !(u.q === q && u.r === r));
+    state.activeUnit = null;
+    draw(); updateUI();
+}
+
+function toggleCitizen() {
+    const key = `${state.selected.q},${state.selected.r}`;
+    const city = state.cities.find(c => c.p === state.currentPlayer && state.borders[key] === c.p);
+    if (!city) return;
+
+    if (city.workedTiles.includes(key)) {
+        city.workedTiles = city.workedTiles.filter(t => t !== key);
+    } else if (city.workedTiles.length < city.pop) {
+        city.workedTiles.push(key);
+    }
+    draw(); updateUI();
+}
+
+function advanceEra() {
+    state.eras[state.currentPlayer] = "Classical";
+    alert(`Player ${state.currentPlayer} entered the Classical Era! New unit unlocked: Swordsman.`);
+    updateUI(); draw();
+    document.getElementById('era-val').innerText = state.eras[state.currentPlayer];
+}
+
+function endTurn() {
+    // 1. Process City Growth and Production
+    state.cities.filter(c => c.p === state.currentPlayer).forEach(c => {
+        let fSum = 0, pSum = 0;
+        c.workedTiles.forEach(key => {
+            const [tq, tr] = key.split(',').map(Number);
+            fSum += state.map[tq][tr].f;
+            pSum += state.map[tq][tr].p;
+        });
+        
+        c.food += (fSum + 2); // Base city growth bonus
+        c.prod += (pSum + 2);
+
+        // Growth
+        if (c.food >= 20) {
+            c.pop++; c.food = 0;
+            // Expand borders randomly to adjacent tile
+            const currentKeys = Object.keys(state.borders).filter(k => state.borders[k] === c.p);
+            for(let k of currentKeys) {
+                let [bq, br] = k.split(',').map(Number);
+                let neighbor = getNeighbors(bq, br).find(n => !state.borders[`${n.q},${n.r}`]);
+                if (neighbor) {
+                    state.borders[`${neighbor.q},${neighbor.r}`] = c.p;
+                    break;
+                }
+            }
+        }
+        // Build Units
+        if (c.prod >= 30) {
+            const type = state.eras[c.p] === "Ancient" ? "Warrior" : "Swordsman";
+            state.units.push({q: c.q, r: c.r, p: c.p, type: type, mp: 2, maxMp: 2});
+            c.prod = 0;
+        }
+    });
+
+    // 2. Switch Players
+    state.currentPlayer = state.currentPlayer === 1 ? 2 : 1;
+    if(state.currentPlayer === 1) state.turn++;
+    
+    // 3. Reset Movement Points
+    state.units.forEach(u => u.mp = u.maxMp);
+
+    // 4. Update UI
+    document.getElementById('turn-val').innerText = state.turn;
+    document.getElementById('player-val').innerText = `Player ${state.currentPlayer}`;
+    document.getElementById('era-val').innerText = state.eras[state.currentPlayer];
+    document.getElementById('player-box').className = `stat-box p${state.currentPlayer}`;
+    state.selected = null; state.activeUnit = null;
+    draw();
+}
+
+initMap();
+draw();
+</script>
+</body>
+</html>

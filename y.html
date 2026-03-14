@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Civ Lite: Tech & Culture Update</title>
+    <style>
+        body { margin: 0; background: #1a1a1a; color: white; font-family: 'Segoe UI', sans-serif; display: flex; height: 100vh; overflow: hidden; }
+        #canvas-container { flex-grow: 1; position: relative; overflow: hidden; background: #0b0d0f; }
+        canvas { cursor: grab; }
+        
+        #top-bar { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.85); padding: 12px 20px; border-radius: 8px; border: 1px solid #3498db; z-index: 5; min-width: 220px; cursor: pointer; }
+        #top-bar:hover { background: rgba(50,50,50,0.9); }
+        
+        #ui { width: 360px; background: #2c2c2c; border-left: 3px solid #444; padding: 20px; box-shadow: -5px 0 15px rgba(0,0,0,0.5); z-index: 10; display: flex; flex-direction: column; overflow-y: auto; }
+        .stat-box { background: #3d3d3d; padding: 10px; border-radius: 5px; margin-bottom: 10px; border-left: 4px solid #888; }
+        .p1 { border-left-color: #44f; } .p2 { border-left-color: #f44; }
+        
+        button { background: #4a4a4a; color: white; border: none; padding: 10px; width: 100%; border-radius: 4px; cursor: pointer; margin-top: 5px; font-weight: bold; }
+        button:hover { background: #666; }
+        
+        .city-panel { background: #444; padding: 12px; margin-top: 10px; border-radius: 5px; border: 1px solid #555; }
+        .build-btn { background: #34495e; font-size: 0.8em; padding: 8px; margin: 2px 0; display: block; width: 100%; text-align: left; border-radius: 4px; color: white; border: none; }
+        .build-btn:disabled { background: #222; color: #555; }
+
+        /* Tech Tree Overlay */
+        #tech-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; display: none; justify-content: center; align-items: center; }
+        #tech-menu { background: #2c2c2c; padding: 30px; border-radius: 10px; border: 2px solid #3498db; max-width: 500px; }
+        
+        /* Victory Overlay */
+        #victory-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 200; display: none; justify-content: center; align-items: center; flex-direction: column; text-align: center; }
+        #victory-panel { background: #2c2c2c; padding: 40px; border-radius: 15px; border: 3px solid #f1c40f; max-width: 600px; box-shadow: 0 0 30px #f1c40f; }
+
+        progress { width: 100%; height: 10px; accent-color: #2ecc71; background: #1a1a1a; border-radius: 5px; }
+        #science-progress { accent-color: #3498db; }
+        #culture-progress { accent-color: #9b59b6; }
+    </style>
+</head>
+<body>
+
+<div id="tech-overlay">
+    <div id="tech-menu">
+        <h2 style="margin-top:0">Select Research</h2>
+        <div id="tech-list"></div>
+        <button onclick="document.getElementById('tech-overlay').style.display='none'">Close</button>
+    </div>
+</div>
+
+<div id="victory-overlay">
+    <div id="victory-panel">
+        <h1 style="color: #f1c40f; font-size: 3em; margin-bottom: 5px;">VICTORY</h1>
+        <h2 id="victory-winner" style="color: white; margin-top: 0;"></h2>
+        <p style="font-size: 1.2em; font-style: italic; color: #ccc; margin-top: 20px;">
+            "The world has been convulsed by war, between many powerful nations, but you have emerged victorious! May time long remember your glorious triumph!"
+        </p>
+    </div>
+</div>
+
+<div id="top-bar" onclick="openTechMenu()">
+    <div style="font-size: 0.8em; color: #3498db; font-weight: bold;">RESEARCHING: <span id="tech-name">None</span></div>
+    <progress id="science-progress" value="0" max="100"></progress>
+    <div id="unlocked-techs" style="font-size: 0.7em; color: #aaa; margin-top: 4px;">Click to change tech</div>
+</div>
+
+<div id="canvas-container">
+    <canvas id="hexCanvas"></canvas>
+</div>
+
+<div id="ui">
+    <h2 style="margin-top:0; color: #f1c40f;">Civ Lite</h2>
+    <div id="player-box" class="stat-box p1">
+        <strong>Turn: <span id="turn-val">1</span></strong> | <span id="player-val">Player 1</span> | 💰 <span id="gold-val">0</span>
+    </div>
+
+    <div id="selection-box" class="stat-box">
+        <strong>Tile:</strong> <span id="tile-info">None</span><br>
+        <div id="yield-info" style="margin-top: 5px; font-size: 0.85em;"></div>
+        <div id="unit-info" style="margin-top:8px; font-weight:bold; color: #e74c3c;"></div>
+        <button id="citizen-btn" style="display:none; background: #d35400; font-size: 0.85em;" onclick="toggleCitizen()">Assign/Remove Citizen</button>
+    </div>
+
+    <div id="city-panel" class="city-panel" style="display:none;">
+        <strong>City Status</strong><br>
+        <span style="font-size: 0.8em;">Pop: <span id="city-pop">1</span> | Growth:</span>
+        <progress id="food-bar" value="0" max="20"></progress>
+        <span style="font-size: 0.8em;">Border Expansion:</span>
+        <progress id="culture-progress" value="0" max="15"></progress>
+        
+        <div style="border-top: 1px solid #666; margin-top: 10px; padding-top: 5px;">
+            <span style="font-size: 0.85em;" id="city-yields"></span>
+        </div>
+
+        <div style="border-top: 1px solid #666; margin-top: 10px; padding-top: 5px;">
+            <strong style="font-size: 0.9em;">Producing: <span id="current-build">Nothing</span></strong>
+            <progress id="prod-bar" value="0" max="100"></progress>
+            <div id="build-options" style="margin-top:8px;"></div>
+        </div>
+    </div>
+
+    <button onclick="endTurn()" style="background: #27ae60; margin-top: 10px; padding: 15px;">END TURN</button>
+    <button id="declare-war-btn" onclick="declareWar()" style="background: #c0392b; margin-top: 10px; padding: 10px; display: none;">DECLARE WAR</button>
+    <button id="settle-btn" style="display:none; background: #8e44ad;" onclick="settle()">Settle City</button>
+    <button id="ranged-attack-btn" style="display:none; background: #c0392b;" onclick="performRangedAttack()">🎯 Ranged Attack</button>
+    <button id="heal-btn" style="display:none; background: #27ae60;" onclick="healUnit()">❤ Heal Unit</button>
+</div>
+
+<div id="worker-panel" style="position: absolute; bottom: 20px; left: 20px; background: rgba(0,0,0,0.85); padding: 15px; border-radius: 8px; border: 1px solid #e67e22; z-index: 10; display: none;">
+    <h3 style="margin-top:0; color: #e67e22;">Worker Actions</h3>
+    <div id="improvement-options"></div>
+</div>
+
+<script>
+const canvas = document.getElementById('hexCanvas');
+const ctx = canvas.getContext('2d');
+const GRID_SIZE = 16; 
+const HEX_RADIUS = 38;
+
+const BLUEPRINTS = {
+    "Warrior":       { type: "unit", cost: 20, str: 8, tech: null },
+    "Settler":       { type: "unit", cost: 50, str: 0,  tech: null },
+    "Worker":        { type: "unit", cost: 30, str: 0,  tech: null },
+    "Archers":       { type: "unit", cost: 35, str: 7, tech: "Archery" },
+    "Spearman":      { type: "unit", cost: 40, str: 11, tech: "Spear" },
+    "Swordsmen":     { type: "unit", cost: 55, str: 14, tech: "Iron Working" },
+    "Horseman":      { type: "unit", cost: 60, str: 12, tech: "Horseman" },
+    "Composite bows":{ type: "unit", cost: 70, str: 9, tech: "Construction" },
+    "Catapult":      { type: "unit", cost: 80, str: 9, tech: "Mathematics" },
+    "Monument":      { type: "bld",  cost: 25, culture: 1, tech: null }, // 100% faster border => +1 over base of 1
+    "Granary":       { type: "bld",  cost: 35, food: 2, tech: "Pottery" },
+    "Library":       { type: "bld",  cost: 40, popScience: 0.5, tech: "Writing" }, // Every second citizen +1s
+    "Market":        { type: "bld",  cost: 50, gold: 2, goldMulti: 0.25, tech: "Economy" },
+    "Wall":          { type: "bld",  cost: 40, def: 4, desc: "+w +4", tech: "Walls" }, // City strength +4
+    "Workshop":      { type: "bld",  cost: 55, prod: 2, prodMulti: 0.1, tech: "Iron Working II" }
+};
+
+const TECHS = {
+    "Pottery":         { cost: 100, req: [], unlocks: "Granary" },
+    "Writing":         { cost: 200, req: ["Pottery"], unlocks: "Library" },
+    "Economy":         { cost: 300, req: ["Writing", "Wheel"], unlocks: "Market" },
+    "Archery":         { cost: 100, req: [], unlocks: "Archers" },
+    "Construction":    { cost: 200, req: ["Archery"], unlocks: "Composite bows, Lumbermills" },
+    "Mathematics":     { cost: 300, req: ["Construction"], unlocks: "Catapult" },
+    "Wheel":           { cost: 200, req: ["Archery"], unlocks: "Road" },
+    "Mining":          { cost: 100, req: [], unlocks: "Mines" },
+    "Spear":           { cost: 200, req: ["Mining"], unlocks: "Spearman" },
+    "Iron Working":    { cost: 200, req: ["Mining"], unlocks: "Swordsmen" },
+    "Iron Working II": { cost: 300, req: ["Iron Working"], unlocks: "Workshop" },
+    "Walls":           { cost: 200, req: ["Mining"], unlocks: "Wall" },
+    "Husbandry":       { cost: 100, req: [], unlocks: "Pastures" },
+    "Horseman":        { cost: 200, req: ["Husbandry"], unlocks: "Horseman" }
+};
+
+let state = {
+    turn: 1, currentPlayer: 1, selected: null, activeUnit: null, atWar: false,
+    camera: { x: 50, y: 50, isDragging: false, lastMouse: {x:0, y:0} },
+    map: [], borders: {}, 
+    players: {
+        1: { science: 0, gold: 0, unlocked: [], currentTech: null },
+        2: { science: 0, gold: 0, unlocked: [], currentTech: null }
+    },
+    units: [
+        {q: 2, r: 2, p: 1, type: 'Settler', mp: 2, hp: 100, str: 0},
+        {q: 2, r: 3, p: 1, type: 'Worker', mp: 2, hp: 100, str: 0},
+        {q: 1, r: 2, p: 1, type: 'Warrior', mp: 2, hp: 100, str: 10},
+        {q: 13, r: 13, p: 2, type: 'Settler', mp: 2, hp: 100, str: 0},
+        {q: 13, r: 14, p: 2, type: 'Worker', mp: 2, hp: 100, str: 0},
+        {q: 12, r: 13, p: 2, type: 'Warrior', mp: 2, hp: 100, str: 10}
+    ],
+    cities: []
+};
+
+function init() {
+    for (let q = 0; q < GRID_SIZE; q++) {
+        state.map[q] = [];
+        for (let r = 0; r < GRID_SIZE; r++) {
+            let n = Math.random();
+            const t = n > 0.85 ? {color:"#8D6E63",f:0,p:2,name:"Hill"} : 
+                      n > 0.7 ? {color:"#2d4d24",f:1,p:1,name:"Forest"} :
+                      n > 0.45 ? {color:"#7a743a",f:1,p:1,name:"Plain"} : {color:"#4e7a3a",f:2,p:0,name:"Grass"};
+            
+            t.g = 0;
+            let resRnd = Math.random();
+            if (resRnd > 0.94 && t.name === "Hill") {
+                t.resource = "Iron"; t.p += 1;
+            } else if (resRnd > 0.90 && t.name === "Plain") {
+                t.resource = "Horse"; t.p += 1;
+            } else if (resRnd > 0.88 && t.name === "Hill") {
+                t.resource = "Diamond"; t.g += 3;
+            } else if (resRnd > 0.85 && t.name === "Hill") {
+                t.resource = "Gold"; t.g += 2;
+            } else if (resRnd > 0.82 && t.name === "Hill") {
+                t.resource = "Silver"; t.g += 2;
+            } else {
+                t.resource = null;
+            }
+            t.improvement = null;
+            state.map[q][r] = t;
+        }
+    }
+}
+
+function getPixel(q, r) {
+    const x = HEX_RADIUS * (3/2 * q) + state.camera.x;
+    const y = HEX_RADIUS * (Math.sqrt(3)/2 * q + Math.sqrt(3) * r) + state.camera.y;
+    return { x, y };
+}
+
+function getNeighbors(q, r) {
+    const dir = [[1,0],[1,-1],[0,-1],[-1,0],[-1,1],[0,1]];
+    return dir.map(([dq, dr]) => ({q: q + dq, r: r + dr}))
+              .filter(n => n.q >= 0 && n.q < GRID_SIZE && n.r >= 0 && n.r < GRID_SIZE);
+}
+
+function draw() {
+    canvas.width = window.innerWidth - 360; canvas.height = window.innerHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let q = 0; q < GRID_SIZE; q++) {
+        for (let r = 0; r < GRID_SIZE; r++) {
+            const { x, y } = getPixel(q, r);
+            const tile = state.map[q][r];
+            ctx.beginPath();
+            for (let i = 0; i < 6; i++) ctx.lineTo(x + HEX_RADIUS * Math.cos(Math.PI/180 * (60 * i)), y + HEX_RADIUS * Math.sin(Math.PI/180 * (60 * i)));
+            ctx.closePath(); ctx.fillStyle = tile.color; ctx.fill();
+
+            // Improvement Visuals
+            if (tile.improvement === 'Farm') {
+                ctx.fillStyle = '#e67e22';
+                ctx.fillRect(x - 12, y - 8, 24, 16);
+            } else if (tile.improvement === 'Mine') {
+                ctx.fillStyle = '#7f8c8d';
+                ctx.beginPath();
+                ctx.arc(x, y - 2, 14, Math.PI, 0);
+                ctx.fill();
+            } else if (tile.improvement === 'Pasture') {
+                ctx.fillStyle = '#8b4513';
+                ctx.beginPath();
+                ctx.arc(x, y, 10, 0, Math.PI * 2);
+                ctx.fill();
+            } else if (tile.improvement === 'Lumber Mill') {
+                ctx.fillStyle = '#8b4513';
+                ctx.beginPath();
+                ctx.moveTo(x, y - 12);
+                ctx.lineTo(x - 10, y + 8);
+                ctx.lineTo(x + 10, y + 8);
+                ctx.fill();
+            }
+
+            // Resources small icon & text
+            if (tile.resource) {
+                const resColors = { "Iron": "#bdc3c7", "Horse": "#8e44ad", "Diamond": "#00ffff", "Gold": "#f1c40f", "Silver": "#ecf0f1" };
+                ctx.fillStyle = resColors[tile.resource] || "white";
+                ctx.fillRect(x - 6, y + 10, 12, 12);
+                ctx.fillStyle = "white";
+                ctx.font = "8px Arial";
+                ctx.textAlign = "center";
+                
+                let resAmount = "";
+                if (tile.resource === "Iron" || tile.resource === "Horse") resAmount = "4";
+                if (tile.resource === "Diamond") resAmount = "1";
+                if (tile.resource === "Gold" || tile.resource === "Silver") resAmount = "2";
+                ctx.fillText(resAmount, x, y + 25);
+            }
+
+            const owner = state.borders[`${q},${r}`];
+            if (owner) { ctx.strokeStyle = owner === 1 ? "#44f" : "#f44"; ctx.lineWidth = 3; ctx.stroke(); }
+            if (state.selected?.q === q && state.selected?.r === r) { ctx.strokeStyle = "white"; ctx.lineWidth = 4; ctx.stroke(); }
+            if (state.cities.some(c => c.workedTiles.includes(`${q},${r}`))) {
+                ctx.fillStyle = "#f1c40f"; ctx.beginPath(); ctx.arc(x + 18, y - 18, 5, 0, 7); ctx.fill();
+            }
+        }
+    }
+    state.cities.forEach(c => {
+        const {x, y} = getPixel(c.q, c.r);
+        ctx.fillStyle = "white"; ctx.font = "bold 10px Arial"; ctx.textAlign = "center"; ctx.fillText("CITY", x, y);
+        
+        // City HP Bar
+        const hpPercent = Math.max(0, c.hp) / 100;
+        ctx.fillStyle = "red";
+        ctx.fillRect(x - 12, y + 6, 24, 4);
+        ctx.fillStyle = "limegreen";
+        ctx.fillRect(x - 12, y + 6, 24 * hpPercent, 4);
+        ctx.strokeStyle = "black";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x - 12, y + 6, 24, 4);
+    });
+    state.units.forEach(u => {
+        const {x, y} = getPixel(u.q, u.r);
+        ctx.beginPath(); ctx.arc(x, y, 16, 0, 7);
+        ctx.fillStyle = u.p === 1 ? "#44f" : "#f44"; ctx.fill();
+        ctx.strokeStyle = (u === state.activeUnit) ? "yellow" : "white"; ctx.lineWidth = 2; ctx.stroke();
+        
+        if (u.job) {
+            ctx.fillStyle = "white";
+            ctx.font = "bold 12px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText("⚒ " + u.job.turns, x, y - 20);
+        }
+        
+        ctx.fillStyle = "white";
+        ctx.font = "bold 12px Arial";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(u.type.substring(0, 2).toUpperCase(), x, y);
+        ctx.textBaseline = "alphabetic"; // reset
+        
+        // HP Bar
+        const hpPercent = Math.max(0, u.hp) / 100;
+        ctx.fillStyle = "red";
+        ctx.fillRect(x - 12, y + 16, 24, 4);
+        ctx.fillStyle = "limegreen";
+        ctx.fillRect(x - 12, y + 16, 24 * hpPercent, 4);
+        ctx.strokeStyle = "black";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x - 12, y + 16, 24, 4);
+    });
+}
+
+function openTechMenu() {
+    const p = state.players[state.currentPlayer];
+    let html = "";
+    for (let t in TECHS) {
+        if (p.unlocked.includes(t)) continue;
+        const reqs = TECHS[t].req;
+        const canResearch = reqs.every(req => p.unlocked.includes(req));
+        if (canResearch) {
+            html += `<button onclick="selectTech('${t}')">${t} (${TECHS[t].cost} Science)</button>`;
+        }
+    }
+    document.getElementById('tech-list').innerHTML = html || "All techs researched!";
+    document.getElementById('tech-overlay').style.display = 'flex';
+}
+
+function selectTech(name) {
+    state.players[state.currentPlayer].currentTech = name;
+    document.getElementById('tech-overlay').style.display = 'none';
+    updateUI();
+}
+
+function updateUI() {
+    const p = state.players[state.currentPlayer];
+    document.getElementById('tech-name').innerText = p.currentTech || "Select Tech";
+    document.getElementById('science-progress').value = p.science;
+    document.getElementById('science-progress').max = p.currentTech ? TECHS[p.currentTech].cost : 100;
+
+    document.getElementById('gold-val').innerText = Math.floor(p.gold);
+
+    if (!state.selected) return;
+    const {q, r} = state.selected;
+    const tile = state.map[q][r];
+    const u = state.units.find(u => u.q === q && u.r === r);
+    const city = state.cities.find(c => c.q === q && c.r === r);
+    const owner = state.borders[`${q},${r}`];
+
+    let tileText = tile.name;
+    if (tile.resource) {
+        let rev = "";
+        if (tile.resource === "Iron" || tile.resource === "Horse") rev = "4 ";
+        else if (tile.resource === "Diamond") rev = "1 ";
+        else if (tile.resource === "Gold" || tile.resource === "Silver") rev = "2 ";
+        tileText += ` [${rev}${tile.resource}]`;
+    }
+    if (tile.improvement) tileText += ` (${tile.improvement})`;
+    document.getElementById('tile-info').innerText = tileText + (owner ? ` (Player ${owner})` : "");
+    
+    let fYield = tile.f + (tile.improvement === 'Farm' ? 1 : 0);
+    let pYield = tile.p + (['Mine', 'Lumber Mill', 'Pasture'].includes(tile.improvement) ? 1 : 0);
+    document.getElementById('yield-info').innerHTML = `<span style="color:#2ecc71">Food: ${fYield}</span> | <span style="color:#f1c40f">Prod: ${pYield}</span> | <span style="color:#f1c40f; color:#f39c12">Gold: ${tile.g}</span>`;
+    
+    let unitText = u ? `${u.type} [HP: ${Math.floor(u.hp)}] (MP: ${u.mp})` : "";
+    if (u && BLUEPRINTS[u.type].str) unitText += ` (Str: ${BLUEPRINTS[u.type].str})`;
+    document.getElementById('unit-info').innerText = unitText;
+    document.getElementById('settle-btn').style.display = (u && u.type === 'Settler' && !owner) ? 'block' : 'none';
+
+    // Ranged attack btn logic
+    let showRangedBtn = false;
+    if (state.activeUnit && state.activeUnit.mp > 0 && state.activeUnit.p === state.currentPlayer && ["Archers", "Composite bows", "Catapult"].includes(state.activeUnit.type)) {
+        if (state.selected && ((u && u.p !== state.currentPlayer) || (city && city.p !== state.currentPlayer))) {
+            const sq = state.selected.q, sr = state.selected.r;
+            const dist = (Math.abs(state.activeUnit.q - sq) + Math.abs(state.activeUnit.q + state.activeUnit.r - sq - sr) + Math.abs(state.activeUnit.r - sr)) / 2;
+            if (dist <= 2 && dist > 0) {
+                showRangedBtn = true;
+            }
+        }
+    }
+    const rangedBtn = document.getElementById('ranged-attack-btn');
+    if (rangedBtn) rangedBtn.style.display = showRangedBtn ? 'block' : 'none';
+
+    // Heal logic
+    const healBtn = document.getElementById('heal-btn');
+    if (healBtn) healBtn.style.display = (state.activeUnit && state.activeUnit.p === state.currentPlayer && state.activeUnit.hp < 100 && state.activeUnit.mp === 2) ? 'block' : 'none';
+
+    // Worker Logic
+    const workerPanel = document.getElementById('worker-panel');
+    if (state.activeUnit && state.activeUnit.type === 'Worker' && state.activeUnit.p === state.currentPlayer) {
+        let optHtml = "";
+        let wq = state.activeUnit.q, wr = state.activeUnit.r;
+        let pTile = state.map[wq][wr];
+        
+        if (state.activeUnit.job) {
+            optHtml = `<div style="color:#f1c40f; font-weight:bold; padding:5px;">Building ${state.activeUnit.job.type} (${state.activeUnit.job.turns} turns left)</div>`;
+        } else if (!pTile.improvement) {
+            if (pTile.name === "Plain" || pTile.name === "Grass") {
+                optHtml += `<button onclick="buildImprovement('Farm')">Build Farm</button>`;
+            }
+            if (pTile.name === "Hill" || pTile.resource === "Iron" || pTile.resource === "Gold" || pTile.resource === "Silver" || pTile.resource === "Diamond") {
+                optHtml += `<button onclick="buildImprovement('Mine')">Build Mine</button>`;
+            }
+            if (pTile.name === "Forest") {
+                optHtml += `<button onclick="buildImprovement('Lumber Mill')">Build Lumber Mill</button>`;
+            }
+            if (pTile.resource === "Horse") {
+                optHtml += `<button onclick="buildImprovement('Pasture')">Build Pasture</button>`;
+            }
+        }
+        if (optHtml) {
+            document.getElementById('improvement-options').innerHTML = optHtml;
+            workerPanel.style.display = 'block';
+        } else {
+            workerPanel.style.display = 'none';
+        }
+    } else {
+        workerPanel.style.display = 'none';
+    }
+
+    const panel = document.getElementById('city-panel');
+    if (city && city.p === state.currentPlayer) {
+        panel.style.display = 'block';
+        document.getElementById('city-pop').innerText = `${city.pop} | HP: ${Math.floor(city.hp)}/100`;
+        document.getElementById('food-bar').value = city.food;
+        document.getElementById('food-bar').max = 20 + (city.pop * 5);
+        document.getElementById('culture-progress').value = city.culture;
+        document.getElementById('current-build').innerText = city.queue || "Nothing";
+        document.getElementById('prod-bar').value = city.prod;
+        document.getElementById('prod-bar').max = BLUEPRINTS[city.queue]?.cost || 100;
+        
+        // Calculate yields
+        let cyF = 3, cyP = 3, cyG = 0, cyS = city.pop * 2;
+        city.workedTiles.forEach(key => {
+            const [tq, tr] = key.split(',').map(Number);
+            if(tq !== city.q || tr !== city.r) {
+                let ct = state.map[tq][tr];
+                cyF += ct.f + (ct.improvement === 'Farm' ? 1 : 0);
+                cyP += ct.p + (['Mine', 'Lumber Mill', 'Pasture'].includes(ct.improvement) ? 1 : 0);
+                cyG += ct.g || 0;
+            }
+        });
+        let pMulti = 1.0;
+        let gMulti = 1.0;
+        city.buildings.forEach(b => {
+            if (b === "Granary") cyF += 2;
+            if (b === "Workshop") { cyP += 2; pMulti += 0.1; }
+            if (b === "Library") cyS += Math.floor(city.pop / 2);
+            if (b === "Market") { cyG += 2; gMulti += 0.25; }
+        });
+        cyP *= pMulti;
+        cyG *= gMulti;
+        
+        document.getElementById('city-yields').innerHTML = `
+            <span style="color:#2ecc71">🍞 ${cyF}</span> | 
+            <span style="color:#f1c40f">⚒ ${cyP.toFixed(1)}</span> | 
+            <span style="color:#f39c12">💰 ${cyG.toFixed(1)}</span> | 
+            <span style="color:#3498db">🧪 ${cyS}</span>
+        `;
+
+        let html = "";
+        for(let key in BLUEPRINTS) {
+            const b = BLUEPRINTS[key];
+            const locked = b.tech && !p.unlocked.includes(b.tech);
+            const exists = b.type === "bld" && city.buildings.includes(key);
+            let label = key;
+            if (b.desc) label += ` ${b.desc}`;
+            html += `<button class="build-btn" ${locked || exists ? 'disabled' : ''} onclick="setBuild('${key}')">
+                ${label} (${b.cost}P)
+            </button>`;
+        }
+        document.getElementById('build-options').innerHTML = html;
+    } else { panel.style.display = 'none'; }
+    
+    const cityOfOwner = state.cities.find(c => c.p === state.currentPlayer && owner === c.p);
+    document.getElementById('citizen-btn').style.display = cityOfOwner ? 'block' : 'none';
+    
+    document.getElementById('declare-war-btn').style.display = state.atWar ? 'none' : 'block';
+}
+
+function setBuild(item) {
+    const city = state.cities.find(c => c.q === state.selected.q && c.r === state.selected.r);
+    if (city) { city.queue = item; city.prod = 0; updateUI(); }
+}
+
+function buildImprovement(type) {
+    if (!state.activeUnit || state.activeUnit.type !== 'Worker') return;
+    state.activeUnit.job = { type: type, turns: 5 };
+    state.activeUnit.mp = 0;
+
+    draw(); updateUI();
+}
+
+function healUnit() {
+    if (state.activeUnit && state.activeUnit.p === state.currentPlayer && state.activeUnit.mp === 2) {
+        state.activeUnit.healing = true;
+        state.activeUnit.mp = 0;
+        updateUI(); draw();
+    }
+}
+
+function checkVictory() {
+    if (state.cities.length === 0) return; // Wait until something is settled first? Well, let's just check dynamically based on existing players.
+    
+    // It's possible someone hasn't settled yet, so only check if a player has cities and the OTHER player has 0, BUT both players must have settled at least 1 city in the game history to trigger Domination. 
+    // To keep it simple as requested: if one player controls ALL existing cities on the map and there's at least 1 city, they win.
+    const allCities = state.cities;
+    if (allCities.length > 0) {
+        const p1Cities = allCities.filter(c => c.p === 1).length;
+        const p2Cities = allCities.filter(c => c.p === 2).length;
+        
+        if (p1Cities > 0 && p2Cities === 0 && state.turn > 1) {
+            triggerVictory(1);
+        } else if (p2Cities > 0 && p1Cities === 0 && state.turn > 1) {
+            triggerVictory(2);
+        }
+    }
+}
+
+function triggerVictory(winnerPlayer) {
+    document.getElementById('victory-winner').innerText = `Player ${winnerPlayer} Wins!`;
+    document.getElementById('victory-overlay').style.display = 'flex';
+}
+
+function captureCity(city) {
+    const oldP = city.p;
+    city.p = state.currentPlayer;
+    city.hp = 100;
+    
+    // Transfer contiguous borders
+    let toFlip = [ `${city.q},${city.r}` ];
+    let visited = new Set(toFlip);
+    while (toFlip.length > 0) {
+        let curr = toFlip.pop();
+        let [cq, cr] = curr.split(',').map(Number);
+        state.borders[curr] = state.currentPlayer;
+        getNeighbors(cq, cr).forEach(n => {
+            let nk = `${n.q},${n.r}`;
+            if (state.borders[nk] === oldP && !visited.has(nk)) {
+                visited.add(nk);
+                toFlip.push(nk);
+            }
+        });
+    }
+    checkVictory();
+}
+
+function declareWar() {
+    if (confirm(`Do you want to declare war on Player ${state.currentPlayer === 1 ? 2 : 1}?`)) {
+        state.atWar = true;
+        updateUI();
+    }
+}
+
+function performRangedAttack() {
+    if (!state.atWar) {
+        alert("You must declare war first!");
+        return;
+    }
+    const targetUnit = state.units.find(u => u.q === state.selected.q && u.r === state.selected.r);
+    const targetCity = state.cities.find(c => c.q === state.selected.q && c.r === state.selected.r);
+    if (!state.activeUnit || (!targetUnit && !targetCity)) return;
+
+    const att_str = state.activeUnit.str || 1;
+    
+    if (targetUnit) {
+        const def_str = targetUnit.str || 1;
+        targetUnit.hp -= random_gauss((att_str / def_str) * 20);
+        if (targetUnit.hp <= 0) state.units = state.units.filter(u => u !== targetUnit);
+    } else if (targetCity) {
+        const def_str = 10 + (targetCity.buildings.includes("Wall") ? 4 : 0);
+        targetCity.hp -= random_gauss((att_str / def_str) * 20);
+        if (targetCity.hp <= 0) captureCity(targetCity);
+    }
+    
+    state.activeUnit.mp = 0;
+    state.activeUnit.healing = false;
+    
+    updateUI(); draw();
+}
+
+function random_gauss(mean) {
+    let u=0, v=0;
+    while(u === 0) u = Math.random();
+    while(v === 0) v = Math.random();
+    let z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+    let dev = mean * 0.2; // 20% standard deviation roughly 
+    return Math.max(0, mean + z * dev); 
+}
+
+function handleInteraction(q, r) {
+    state.selected = {q, r};
+    const targetUnit = state.units.find(u => u.q === q && u.r === r);
+    const targetCity = state.cities.find(c => c.q === q && c.r === r);
+
+    if (state.activeUnit && state.activeUnit.p === state.currentPlayer && state.activeUnit.mp > 0) {
+        const dist = (Math.abs(state.activeUnit.q - q) + Math.abs(state.activeUnit.q + state.activeUnit.r - q - r) + Math.abs(state.activeUnit.r - r)) / 2;
+        if (dist === 1) {
+            if ((targetUnit && targetUnit.p !== state.currentPlayer) || (targetCity && targetCity.p !== state.currentPlayer)) {
+                if (!state.atWar) {
+                    alert("You must declare war first!");
+                    return;
+                }
+                const att_str = state.activeUnit.str || 1;
+                state.activeUnit.healing = false;
+                
+                if (targetUnit) {
+                    const def_str = targetUnit.str || 1;
+                    targetUnit.hp -= random_gauss((att_str / def_str) * 20);
+                    if (state.activeUnit.type !== "Archers" && !["Archers", "Composite bows", "Catapult"].includes(state.activeUnit.type)) {
+                        state.activeUnit.hp -= random_gauss((def_str / att_str) * 20);
+                    }
+                    if (targetUnit.hp <= 0) state.units = state.units.filter(u => u !== targetUnit);
+                } else if (targetCity) {
+                    const def_str = 10 + (targetCity.buildings.includes("Wall") ? 4 : 0);
+                    targetCity.hp -= random_gauss((att_str / def_str) * 20);
+                    if (state.activeUnit.type !== "Archers" && !["Archers", "Composite bows", "Catapult"].includes(state.activeUnit.type)) {
+                        state.activeUnit.hp -= random_gauss((def_str / att_str) * 20);
+                    }
+                    if (targetCity.hp <= 0) {
+                        captureCity(targetCity);
+                        state.activeUnit.q = q;
+                        state.activeUnit.r = r;
+                    }
+                }
+                
+                state.activeUnit.mp = 0;
+                if (state.activeUnit.hp <= 0) { state.units = state.units.filter(u => u !== state.activeUnit); state.activeUnit = null; }
+            } else if (!targetUnit && !(targetCity && targetCity.p !== state.currentPlayer)) { 
+                const targetTile = state.map[q][r];
+                const moveCost = (targetTile.name === "Hill" || targetTile.name === "Forest") ? 2 : 1;
+                state.activeUnit.q = q; 
+                state.activeUnit.r = r; 
+                state.activeUnit.mp = Math.max(0, state.activeUnit.mp - moveCost);
+                state.activeUnit.healing = false;
+            }
+        }
+    } else {
+        state.activeUnit = (targetUnit && targetUnit.p === state.currentPlayer) ? targetUnit : null;
+    }
+    
+    updateUI(); draw();
+}
+
+function toggleCitizen() {
+    const key = `${state.selected.q},${state.selected.r}`;
+    const city = state.cities.find(c => c.p === state.currentPlayer && state.borders[key] === c.p);
+    if (!city) return;
+
+    if (city.workedTiles.includes(key)) {
+        city.workedTiles = city.workedTiles.filter(t => t !== key);
+    } else if (city.workedTiles.length < city.pop) {
+        city.workedTiles.push(key);
+    }
+    draw(); updateUI();
+}
+
+function settle() {
+    const {q, r} = state.selected;
+    state.cities.push({ q, r, p: state.currentPlayer, food: 0, prod: 0, pop: 1, culture: 0, queue: null, buildings: [], workedTiles: [`${q},${r}`], hp: 100 });
+    state.borders[`${q},${r}`] = state.currentPlayer;
+    getNeighbors(q, r).forEach(n => state.borders[`${n.q},${n.r}`] = state.currentPlayer);
+    state.units = state.units.filter(u => !(u.q === q && u.r === r));
+    draw(); updateUI();
+}
+
+function endTurn() {
+    const p = state.players[state.currentPlayer];
+    let turnScience = 6;
+
+    state.cities.filter(c => c.p === state.currentPlayer).forEach(c => {
+        let f = 3, prod = 3, cult = 1, gold = 0; // Base city yields
+        turnScience += c.pop * 2;
+        
+        c.workedTiles.forEach(key => {
+            const [tq, tr] = key.split(',').map(Number);
+            if(tq !== c.q || tr !== c.r) {
+                let tile = state.map[tq][tr];
+                f += tile.f + (tile.improvement === 'Farm' ? 1 : 0);
+                prod += tile.p + (['Mine', 'Lumber Mill', 'Pasture'].includes(tile.improvement) ? 1 : 0);
+                gold += tile.g || 0;
+            }
+        });
+
+        let pMulti = 1.0;
+        let gMulti = 1.0;
+
+        c.buildings.forEach(b => {
+            if (b === "Granary") f += 2;
+            if (b === "Workshop") { prod += 2; pMulti += 0.1; }
+            if (b === "Library") turnScience += Math.floor(c.pop / 2);
+            if (b === "Monument") cult += 1;
+            if (b === "Market") { gold += 2; gMulti += 0.25; }
+        });
+
+        prod *= pMulti;
+        gold *= gMulti;
+        p.gold += gold;
+
+        // Culture / Border Expansion
+        c.culture += cult;
+        if (c.culture >= 15) {
+            c.culture -= 15;
+            const current = Object.keys(state.borders).filter(k => state.borders[k] === c.p);
+            for(let key of current) {
+                let [bq, br] = key.split(',').map(Number);
+                let target = getNeighbors(bq, br).find(n => !state.borders[`${n.q},${n.r}`]);
+                if (target) { state.borders[`${target.q},${target.r}`] = c.p; break; }
+            }
+        }
+
+        // Food & Production (with overflow)
+        c.food += f; 
+        const foodNeed = 20 + (c.pop * 5);
+        if (c.food >= foodNeed) { c.food -= foodNeed; c.pop++; }
+        
+        if (c.queue) {
+            c.prod += prod;
+            if (c.prod >= BLUEPRINTS[c.queue].cost) {
+                if (BLUEPRINTS[c.queue].type === "unit") {
+                    state.units.push({ q: c.q, r: c.r, p: c.p, type: c.queue, mp: 2, hp: 100, str: BLUEPRINTS[c.queue].str });
+                } else { c.buildings.push(c.queue); }
+                c.prod -= BLUEPRINTS[c.queue].cost; c.queue = null;
+            }
+        }
+    });
+
+    if (p.currentTech) {
+        p.science += turnScience;
+        if (p.science >= TECHS[p.currentTech].cost) {
+            p.unlocked.push(p.currentTech);
+            p.science = 0; p.currentTech = null;
+            alert(`Player ${state.currentPlayer} finished research!`);
+        }
+    }
+
+    state.units.filter(u => u.p === state.currentPlayer).forEach(u => {
+        if (u.job && u.type === 'Worker') {
+            u.job.turns--;
+            if (u.job.turns <= 0) {
+                state.map[u.q][u.r].improvement = u.job.type;
+                u.job = null;
+            }
+        }
+        if (u.healing) {
+            u.hp = Math.min(100, u.hp + 10);
+        }
+    });
+    state.units = state.units.filter(u => !u.dead);
+
+    state.cities.filter(c => c.p === state.currentPlayer).forEach(c => {
+        if (c.hp < 100) c.hp = Math.min(100, c.hp + 10);
+    });
+
+    state.currentPlayer = state.currentPlayer === 1 ? 2 : 1;
+    if(state.currentPlayer === 1) state.turn++;
+    
+    state.units.forEach(u => {
+        u.mp = u.job ? 0 : 2;
+    });
+    
+    state.selected = null;
+    state.activeUnit = null;
+    
+    document.getElementById('turn-val').innerText = state.turn;
+    document.getElementById('player-val').innerText = "Player " + state.currentPlayer;
+    document.getElementById('player-box').className = `stat-box p${state.currentPlayer}`;
+    updateUI(); draw();
+}
+
+canvas.onclick = (e) => {
+    for (let q = 0; q < GRID_SIZE; q++) {
+        for (let r = 0; r < GRID_SIZE; r++) {
+            const { x, y } = getPixel(q, r);
+            if (Math.hypot(e.clientX - x, e.clientY - y) < HEX_RADIUS) { handleInteraction(q, r); return; }
+        }
+    }
+};
+
+canvas.onmousedown = (e) => { state.camera.isDragging = true; state.camera.lastMouse = { x: e.clientX, y: e.clientY }; };
+window.onmouseup = () => state.camera.isDragging = false;
+window.onmousemove = (e) => {
+    if (state.camera.isDragging) {
+        state.camera.x += e.clientX - state.camera.lastMouse.x;
+        state.camera.y += e.clientY - state.camera.lastMouse.y;
+        state.camera.lastMouse = { x: e.clientX, y: e.clientY };
+        draw();
+    }
+};
+
+init(); draw(); updateUI();
+</script>
+</body>
+</html>
