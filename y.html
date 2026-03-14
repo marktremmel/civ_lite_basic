@@ -375,7 +375,7 @@ function updateUI() {
     if (state.activeUnit && state.activeUnit.mp > 0 && state.activeUnit.p === state.currentPlayer && ["Archers", "Composite bows", "Catapult"].includes(state.activeUnit.type)) {
         if (state.selected && ((u && u.p !== state.currentPlayer) || (city && city.p !== state.currentPlayer))) {
             const sq = state.selected.q, sr = state.selected.r;
-            const dist = (Math.abs(state.activeUnit.q - sq) + Math.abs(state.activeUnit.q + state.activeUnit.r - sq - sr) + Math.abs(state.activeUnit.r - sr)) / 2;
+            const dist = hexDist(state.activeUnit.q, state.activeUnit.r, sq, sr);
             if (dist <= 2 && dist > 0) {
                 showRangedBtn = true;
             }
@@ -564,13 +564,14 @@ function performRangedAttack() {
     const targetCity = state.cities.find(c => c.q === state.selected.q && c.r === state.selected.r);
     if (!state.activeUnit || (!targetUnit && !targetCity)) return;
 
-    const att_str = state.activeUnit.str || 1;
+    let att_str = state.activeUnit.str || 1;
     
     if (targetUnit) {
         const def_str = targetUnit.str || 1;
         targetUnit.hp -= random_gauss((att_str / def_str) * 20);
         if (targetUnit.hp <= 0) state.units = state.units.filter(u => u !== targetUnit);
     } else if (targetCity) {
+        if (state.activeUnit.type === "Catapult") att_str *= 3; // +200% against cities
         const def_str = 10 + (targetCity.buildings.includes("Wall") ? 4 : 0);
         targetCity.hp -= random_gauss((att_str / def_str) * 20);
         if (targetCity.hp <= 0) captureCity(targetCity);
@@ -591,20 +592,105 @@ function random_gauss(mean) {
     return Math.max(0, mean + z * dev); 
 }
 
+function hexDist(q1, r1, q2, r2) {
+    return (Math.abs(q1 - q2) + Math.abs(q1 + r1 - q2 - r2) + Math.abs(r1 - r2)) / 2;
+}
+
+function playAI() {
+    const p = state.players[2];
+    if (!p.currentTech) {
+        const avail = Object.keys(TECHS).filter(t => !p.unlocked.includes(t) && TECHS[t].req.every(r => p.unlocked.includes(r)));
+        if (avail.length > 0) p.currentTech = avail[Math.floor(Math.random() * avail.length)];
+    }
+    const myUnits = state.units.filter(u => u.p === 2);
+    const myCities = state.cities.filter(c => c.p === 2);
+    const numWorkers = myUnits.filter(u => u.type === 'Worker').length;
+    myCities.forEach(c => {
+        if (!c.queue) {
+            const u = (tech) => tech === null || p.unlocked.includes(tech);
+            if (myCities.length + myUnits.filter(u => u.type === 'Settler').length < 8 && u(BLUEPRINTS["Settler"].tech)) c.queue = "Settler";
+            else if (!c.buildings.includes("Granary") && u(BLUEPRINTS["Granary"].tech)) c.queue = "Granary";
+            else if (!c.buildings.includes("Monument") && u(BLUEPRINTS["Monument"].tech)) c.queue = "Monument";
+            else if (numWorkers < myCities.length && u(BLUEPRINTS["Worker"].tech)) c.queue = "Worker";
+            else if (!c.buildings.includes("Library") && u(BLUEPRINTS["Library"].tech)) c.queue = "Library";
+            else if (!c.buildings.includes("Market") && u(BLUEPRINTS["Market"].tech)) c.queue = "Market";
+            else if (!c.buildings.includes("Workshop") && u(BLUEPRINTS["Workshop"].tech)) c.queue = "Workshop";
+            else if (u(BLUEPRINTS["Archers"].tech)) c.queue = "Archers";
+            else c.queue = "Warrior";
+        }
+    });
+
+    myUnits.forEach(u => {
+        if (u.job || u.healing) return;
+        let attempts = 0;
+        while (u.mp > 0 && attempts < 5) {
+            attempts++;
+            if (u.type === 'Settler') {
+                const isGood = (q, r) => !state.borders[`${q},${r}`] && state.cities.every(c => hexDist(q, r, c.q, c.r) >= 3);
+                if (isGood(u.q, u.r)) { state.selected = {q: u.q, r: u.r}; settle(); break; }
+                else {
+                    let best = null, minDist = Infinity;
+                    for (let q = 0; q < GRID_SIZE; q++) for (let r = 0; r < GRID_SIZE; r++) {
+                        if (isGood(q, r)) { let d = hexDist(u.q, u.r, q, r); if (d < minDist) { minDist = d; best = {q, r}; } }
+                    }
+                    if (best) moveUnitGreedyAI(u, best.q, best.r); else break;
+                }
+            } else if (u.type === 'Worker') {
+                const isGood = (q, r) => state.borders[`${q},${r}`] === 2 && !state.map[q][r].improvement && ["Plain", "Grass", "Hill", "Forest"].includes(state.map[q][r].name);
+                if (isGood(u.q, u.r)) {
+                    state.activeUnit = u;
+                    const T = state.map[u.q][u.r];
+                    if (T.name === "Plain" || T.name === "Grass") buildImprovement("Farm");
+                    else if (T.name === "Forest") buildImprovement("Lumber Mill");
+                    else buildImprovement("Mine");
+                    state.activeUnit = null; break;
+                } else {
+                    let best = null, minDist = Infinity;
+                    for (let q = 0; q < GRID_SIZE; q++) for (let r = 0; r < GRID_SIZE; r++) {
+                        if (isGood(q, r)) { let d = hexDist(u.q, u.r, q, r); if (d < minDist) { minDist = d; best = {q, r}; } }
+                    }
+                    if (best) moveUnitGreedyAI(u, best.q, best.r); else { u.mp = 0; break; }
+                }
+            } else {
+                if (u.hp < 100) u.healing = true;
+                u.mp = 0; break;
+            }
+        }
+    });
+
+    state.selected = null; state.activeUnit = null;
+    endTurn();
+}
+
+function moveUnitGreedyAI(u, tq, tr) {
+    let bestN = null, minDist = hexDist(u.q, u.r, tq, tr);
+    getNeighbors(u.q, u.r).forEach(n => {
+        if (!state.units.find(un => un.q === n.q && un.r === n.r) && hexDist(n.q, n.r, tq, tr) < minDist) {
+            minDist = hexDist(n.q, n.r, tq, tr); bestN = n;
+        }
+    });
+    if (bestN) {
+        const mc = (state.map[bestN.q][bestN.r].name === "Hill" || state.map[bestN.q][bestN.r].name === "Forest") ? 2 : 1;
+        if (u.mp >= mc) { u.q = bestN.q; u.r = bestN.r; u.mp -= mc; }
+        else if (u.mp > 0) { u.q = bestN.q; u.r = bestN.r; u.mp = 0; }
+        else u.mp = 0;
+    } else u.mp = 0;
+}
+
 function handleInteraction(q, r) {
     state.selected = {q, r};
     const targetUnit = state.units.find(u => u.q === q && u.r === r);
     const targetCity = state.cities.find(c => c.q === q && c.r === r);
 
     if (state.activeUnit && state.activeUnit.p === state.currentPlayer && state.activeUnit.mp > 0) {
-        const dist = (Math.abs(state.activeUnit.q - q) + Math.abs(state.activeUnit.q + state.activeUnit.r - q - r) + Math.abs(state.activeUnit.r - r)) / 2;
+        const dist = hexDist(state.activeUnit.q, state.activeUnit.r, q, r);
         if (dist === 1) {
             if ((targetUnit && targetUnit.p !== state.currentPlayer) || (targetCity && targetCity.p !== state.currentPlayer)) {
                 if (!state.atWar) {
                     alert("You must declare war first!");
                     return;
                 }
-                const att_str = state.activeUnit.str || 1;
+                let att_str = state.activeUnit.str || 1;
                 state.activeUnit.healing = false;
                 
                 if (targetUnit) {
@@ -615,6 +701,7 @@ function handleInteraction(q, r) {
                     }
                     if (targetUnit.hp <= 0) state.units = state.units.filter(u => u !== targetUnit);
                 } else if (targetCity) {
+                    if (state.activeUnit.type === "Catapult") att_str *= 3; // +200% against cities
                     const def_str = 10 + (targetCity.buildings.includes("Wall") ? 4 : 0);
                     targetCity.hp -= random_gauss((att_str / def_str) * 20);
                     if (state.activeUnit.type !== "Archers" && !["Archers", "Composite bows", "Catapult"].includes(state.activeUnit.type)) {
@@ -733,7 +820,9 @@ function endTurn() {
         if (p.science >= TECHS[p.currentTech].cost) {
             p.unlocked.push(p.currentTech);
             p.science = 0; p.currentTech = null;
-            alert(`Player ${state.currentPlayer} finished research!`);
+            if (state.currentPlayer === 1) {
+                alert(`Player ${state.currentPlayer} finished research!`);
+            }
         }
     }
 
@@ -769,9 +858,14 @@ function endTurn() {
     document.getElementById('player-val').innerText = "Player " + state.currentPlayer;
     document.getElementById('player-box').className = `stat-box p${state.currentPlayer}`;
     updateUI(); draw();
+    
+    if (state.currentPlayer === 2) {
+        setTimeout(playAI, 100);
+    }
 }
 
 canvas.onclick = (e) => {
+    if (state.currentPlayer === 2) return; // Block clicks during AI throw
     for (let q = 0; q < GRID_SIZE; q++) {
         for (let r = 0; r < GRID_SIZE; r++) {
             const { x, y } = getPixel(q, r);
